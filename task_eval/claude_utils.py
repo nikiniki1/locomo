@@ -6,7 +6,6 @@ import random
 import os, json
 from tqdm import tqdm
 import time
-from global_methods import run_claude
 
 
 from scipy.spatial import distance

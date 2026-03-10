@@ -8,7 +8,7 @@ import torch
 from tqdm import tqdm
 from global_methods import get_openai_embedding, set_openai_key, run_chatgpt_with_examples
 
-
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def save_eval(data_file, accs, key='exact_match'):
 
@@ -38,7 +38,7 @@ def init_context_model(retriever):
     if retriever == 'dpr':
         from transformers import DPRConfig, DPRContextEncoder, DPRQuestionEncoder, DPRQuestionEncoderTokenizer, DPRContextEncoderTokenizer
         context_tokenizer = DPRContextEncoderTokenizer.from_pretrained("facebook/dpr-ctx_encoder-single-nq-base")
-        context_model = DPRContextEncoder.from_pretrained("facebook/dpr-ctx_encoder-single-nq-base").cuda()
+        context_model = DPRContextEncoder.from_pretrained("facebook/dpr-ctx_encoder-single-nq-base").to_device(device)
         context_model.eval()
         return context_tokenizer, context_model
 
@@ -46,7 +46,7 @@ def init_context_model(retriever):
 
         from transformers import AutoTokenizer, AutoModel
         context_tokenizer = AutoTokenizer.from_pretrained('facebook/contriever')
-        context_model = AutoModel.from_pretrained('facebook/contriever').cuda()
+        context_model = AutoModel.from_pretrained('facebook/contriever').to_device(device)
         context_model.eval()
         return context_tokenizer, context_model
 
@@ -54,7 +54,7 @@ def init_context_model(retriever):
 
         from transformers import AutoTokenizer, AutoModel
         context_tokenizer = AutoTokenizer.from_pretrained('facebook/dragon-plus-query-encoder')
-        context_model = AutoModel.from_pretrained('facebook/dragon-plus-context-encoder').cuda()
+        context_model = AutoModel.from_pretrained('facebook/dragon-plus-context-encoder').to_device(device)
         return context_tokenizer, context_model
 
     elif retriever == 'openai':
@@ -70,7 +70,7 @@ def init_query_model(retriever):
     if retriever == 'dpr':
         from transformers import DPRConfig, DPRContextEncoder, DPRQuestionEncoder, DPRQuestionEncoderTokenizer, DPRContextEncoderTokenizer
         question_tokenizer = DPRQuestionEncoderTokenizer.from_pretrained("facebook/dpr-question_encoder-single-nq-base")
-        question_model = DPRQuestionEncoder.from_pretrained("facebook/dpr-question_encoder-single-nq-base").cuda()
+        question_model = DPRQuestionEncoder.from_pretrained("facebook/dpr-question_encoder-single-nq-base").to_device(device)
         question_model.eval()
         return question_tokenizer, question_model
 
@@ -78,7 +78,7 @@ def init_query_model(retriever):
 
         from transformers import AutoTokenizer, AutoModel
         question_tokenizer = context_tokenizer
-        question_model = AutoModel.from_pretrained('facebook/contriever').cuda()
+        question_model = AutoModel.from_pretrained('facebook/contriever').to_device(device)
         question_model.eval()
         return question_tokenizer, question_model
 
@@ -86,7 +86,7 @@ def init_query_model(retriever):
 
         from transformers import AutoTokenizer, AutoModel
         context_tokenizer = AutoTokenizer.from_pretrained('facebook/dragon-plus-query-encoder')
-        question_model = AutoModel.from_pretrained('facebook/dragon-plus-query-encoder').cuda()
+        question_model = AutoModel.from_pretrained('facebook/dragon-plus-query-encoder').to_device(device)
         question_tokenizer = context_tokenizer
         return question_tokenizer, question_model
 
@@ -113,7 +113,7 @@ def get_embeddings(retriever, inputs, mode='context'):
         for i in tqdm(range(0, len(inputs), batch_size)):
             # print(input_ids.shape)
             if retriever == 'dpr':
-                input_ids = tokenizer(inputs[i:(i+batch_size)], return_tensors="pt", padding=True)["input_ids"].cuda()
+                input_ids = tokenizer(inputs[i:(i+batch_size)], return_tensors="pt", padding=True)["input_ids"].to_device(device)
                 embeddings = encoder(input_ids).pooler_output.detach()
                 # print(embeddings.shape)
                 all_embeddings.append(torch.nn.functional.normalize(embeddings, dim=-1))
@@ -121,7 +121,7 @@ def get_embeddings(retriever, inputs, mode='context'):
                 # Compute token embeddings
                 ctx_input = tokenizer(inputs[i:(i+batch_size)], padding=True, truncation=True, return_tensors='pt')
                 # print(ctx_input.keys())
-                # input_ids = context_tokenizer(contexts, return_tensors="pt", padding=True)["input_ids"].cuda()
+                # input_ids = context_tokenizer(contexts, return_tensors="pt", padding=True)["input_ids"].to_device(device)
                 outputs = encoder(**ctx_input)
                 embeddings = mean_pooling(outputs[0], inputs['attention_mask'])
                 all_embeddings.append(torch.nn.functional.normalize(embeddings, dim=-1))
@@ -164,7 +164,7 @@ def get_context_embeddings(retriever, data, context_tokenizer, context_encoder, 
             with torch.no_grad():
                 # print(input_ids.shape)
                 if retriever == 'dpr':
-                    input_ids = context_tokenizer(contexts, return_tensors="pt", padding=True)["input_ids"].cuda()
+                    input_ids = context_tokenizer(contexts, return_tensors="pt", padding=True)["input_ids"].to_device(device)
                     embeddings = context_encoder(input_ids).pooler_output.detach()
                     # print(embeddings.shape)
                     context_embeddings.append(torch.nn.functional.normalize(embeddings, dim=-1))
@@ -172,7 +172,7 @@ def get_context_embeddings(retriever, data, context_tokenizer, context_encoder, 
                     # Compute token embeddings
                     inputs = context_tokenizer(contexts, padding=True, truncation=True, return_tensors='pt')
                     print(inputs.keys())
-                    # input_ids = context_tokenizer(contexts, return_tensors="pt", padding=True)["input_ids"].cuda()
+                    # input_ids = context_tokenizer(contexts, return_tensors="pt", padding=True)["input_ids"].to_device(device)
                     outputs = context_encoder(**inputs)
                     embeddings = mean_pooling(outputs[0], inputs['attention_mask'])
                     context_embeddings.append(torch.nn.functional.normalize(embeddings, dim=-1))

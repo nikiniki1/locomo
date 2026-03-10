@@ -199,7 +199,11 @@ def eval_question_answering(qas, eval_key='prediction', metric='f1'):
         if type(line[eval_key]) == list:
             answer = line['answer']
         else:
-            answer = str(line['answer'])
+            try:
+                answer = str(line['answer'])
+            except KeyError:
+                answer = str(line['adversarial_answer'])
+
         if line['category'] == 3:
             answer = answer.split(';')[0].strip()
         

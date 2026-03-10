@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pickle
@@ -12,14 +13,14 @@ from task_eval.rag_utils import get_embeddings
 import tiktoken
 import numpy as np
 
-MAX_LENGTH={'gpt-4-turbo': 128000,
-            'gpt-4': 4096,
-            'gpt-3.5-turbo-16k': 16000,
-            'gpt-3.5-turbo-12k': 12000,
-            'gpt-3.5-turbo-8k': 8000,
-            'gpt-3.5-turbo-4k': 4000,
-            'gpt-3.5-turbo': 4096,
-            'gpt-4-32k': 320000}
+MAX_LENGTH = {'gpt-4-turbo': 128000,
+              'gpt-4': 4096,
+              'gpt-3.5-turbo-16k': 16000,
+              'gpt-3.5-turbo-12k': 12000,
+              'gpt-3.5-turbo-8k': 8000,
+              'gpt-3.5-turbo-4k': 4000,
+              'gpt-3.5-turbo': 4096,
+              'gpt-4-32k': 320000}
 PER_QA_TOKEN_BUDGET = 50
 
 QA_PROMPT = """
@@ -51,8 +52,51 @@ Use single-quote characters for named entities and double-quote characters for e
 CONV_START_PROMPT = "Below is a conversation between two people: {} and {}. The conversation takes place over multiple days and the date of each conversation is wriiten at the beginning of the conversation.\n\n"
 
 
-def process_ouput(text):
+def get_proper_dict(query: str):
+    from pydantic import BaseModel, Field
+    from openai import OpenAI
+    import ast
 
+    class JSONValidator(BaseModel):
+        """
+        Твоя задача проверить является ли строка JSON валидной, если нет то исправить ее
+        """
+        is_valid: bool = Field(description='Булевый флаг валидная строка или нет')
+        corrected: str = Field(
+            description="Если JSON не валидный то напиши как правильно и не пиши ничего лишнего, я эту строку потом буду использовать с json.loads. Если исходная строка верная, то также ее укажи тут без изменений")
+        reason: str = Field(description="Объяснение почему строка неверная или верная")
+
+    client = OpenAI(
+        api_key=os.environ["OPENAI_API_KEY"],
+        base_url=os.environ.get("OPENAI_API_BASE")
+    )
+
+    response = client.responses.parse(
+        model="gpt-4o-2024-08-06",
+        input=[
+            {"role": "system",
+             "content": "Твоя задача проверить является ли строка JSON валидной, если нет то исправить ее"},
+            {
+                "role": "user",
+                "content": query,
+            },
+        ],
+        text_format=JSONValidator,
+    )
+    resp = response.output_parsed.model_dump()
+    correct_s = resp['corrected'].replace("\\n", "")
+    try:
+        correct = ast.literal_eval(correct_s)
+    except Exception:
+        try:
+            correct = json.loads(correct_s)
+        except Exception:
+            correct = None
+        print(correct_s)
+    return correct_s
+
+
+def process_ouput(text):
     single_quote_count = text.count("'")
     double_quote_count = text.count('"')
     if single_quote_count > double_quote_count:
@@ -65,14 +109,15 @@ def process_ouput(text):
 
 
 def prepare_for_rag(args, data):
-
     dataset_prefix = os.path.splitext(os.path.split(args.data_file)[-1])[0]
 
     if args.rag_mode == "summary":
 
         # check if embeddings exist
-        assert os.path.exists(os.path.join(args.emb_dir, '%s_session_summary_%s.pkl' % (dataset_prefix, data['sample_id']))), "Summaries and embeddings do not exist for %s" % data['sample_id']
-        database = pickle.load(open(os.path.join(args.emb_dir, '%s_session_summary_%s.pkl' % (dataset_prefix, data['sample_id'])), 'rb'))
+        assert os.path.exists(os.path.join(args.emb_dir, '%s_session_summary_%s.pkl' % (
+        dataset_prefix, data['sample_id']))), "Summaries and embeddings do not exist for %s" % data['sample_id']
+        database = pickle.load(
+            open(os.path.join(args.emb_dir, '%s_session_summary_%s.pkl' % (dataset_prefix, data['sample_id'])), 'rb'))
 
 
     elif args.rag_mode == 'dialog':
@@ -82,15 +127,18 @@ def prepare_for_rag(args, data):
             dialogs = []
             date_times = []
             context_ids = []
-            session_nums = [int(k.split('_')[-1]) for k in data['conversation'].keys() if 'session' in k and 'date_time' not in k]
+            session_nums = [int(k.split('_')[-1]) for k in data['conversation'].keys() if
+                            'session' in k and 'date_time' not in k]
             for i in range(min(session_nums), max(session_nums) + 1):
-            
+
                 date_time = data['conversation']['session_%s_date_time' % i]
                 for dialog in data['conversation']['session_%s' % i]:
                     context_ids.append(dialog['dia_id'])
                     date_times.append(date_time)
                     if 'blip_caption' in dialog:
-                        dialogs.append(dialog['speaker'] + ' said, \"' + dialog['text'] + '\"' + ' and shared ' + dialog['blip_caption'])
+                        dialogs.append(
+                            dialog['speaker'] + ' said, \"' + dialog['text'] + '\"' + ' and shared ' + dialog[
+                                'blip_caption'])
                     else:
                         dialogs.append(dialog['speaker'] + ' said, \"' + dialog['text'] + '\"')
 
@@ -98,27 +146,30 @@ def prepare_for_rag(args, data):
             embeddings = get_embeddings(args.retriever, dialogs, 'context')
             assert embeddings.shape[0] == len(dialogs), "Lengths of embeddings and dialogs do not match"
             database = {'embeddings': embeddings,
-                             'date_time': date_times,
-                             'dia_id': context_ids,
-                             'context': dialogs}
+                        'date_time': date_times,
+                        'dia_id': context_ids,
+                        'context': dialogs}
 
             with open(os.path.join(args.emb_dir, '%s_dialog_%s.pkl' % (dataset_prefix, data['sample_id'])), 'wb') as f:
                 pickle.dump(database, f)
 
         else:
-            database = pickle.load(open(os.path.join(args.emb_dir, '%s_dialog_%s.pkl' % (dataset_prefix, data['sample_id'])), 'rb'))
+            database = pickle.load(
+                open(os.path.join(args.emb_dir, '%s_dialog_%s.pkl' % (dataset_prefix, data['sample_id'])), 'rb'))
 
 
     elif args.rag_mode == 'observation':
-        
+
         # check if embeddings exist
-        assert os.path.exists(os.path.join(args.emb_dir, '%s_observation_%s.pkl' % (dataset_prefix, data['sample_id']))), "Observations and embeddings do not exist for %s" % data['sample_id']
-        database = pickle.load(open(os.path.join(args.emb_dir, '%s_observation_%s.pkl' % (dataset_prefix, data['sample_id'])), 'rb'))
+        assert os.path.exists(os.path.join(args.emb_dir, '%s_observation_%s.pkl' % (
+        dataset_prefix, data['sample_id']))), "Observations and embeddings do not exist for %s" % data['sample_id']
+        database = pickle.load(
+            open(os.path.join(args.emb_dir, '%s_observation_%s.pkl' % (dataset_prefix, data['sample_id'])), 'rb'))
 
 
     else:
         raise ValueError
-    
+
     print("Getting embeddings for %s questions" % len(data['qa']))
     question_embeddings = get_embeddings(args.retriever, [q['question'] for q in data['qa']], 'query')
 
@@ -126,7 +177,6 @@ def prepare_for_rag(args, data):
 
 
 def get_cat_5_answer(model_prediction, answer_key):
-
     model_prediction = model_prediction.strip().lower()
     if len(model_prediction) == 1:
         if 'a' in model_prediction:
@@ -143,11 +193,10 @@ def get_cat_5_answer(model_prediction, answer_key):
 
 
 def get_rag_context(context_database, query_vector, args):
-
     output = np.dot(query_vector, context_database['embeddings'].T)
     sorted_outputs = np.argsort(output)[::-1]
     sorted_context = [context_database['context'][idx] for idx in sorted_outputs[:args.top_k]]
-    
+
     sorted_context_ids = []
     for idx in sorted_outputs[:args.top_k]:
         context_id = context_database['dia_id'][idx]
@@ -162,15 +211,16 @@ def get_rag_context(context_database, query_vector, args):
     # sorted_context_ids = [context_database['dia_id'][idx] for idx in sorted_outputs[:args.top_k]]
     sorted_date_times = [context_database['date_time'][idx] for idx in sorted_outputs[:args.top_k]]
     if args.rag_mode in ['dialog', 'observation']:
-        query_context = '\n'.join([date_time + ': ' + context for date_time, context in zip(sorted_date_times, sorted_context)])
+        query_context = '\n'.join(
+            [date_time + ': ' + context for date_time, context in zip(sorted_date_times, sorted_context)])
     else:
-        query_context = '\n\n'.join([date_time + ': ' + context for date_time, context in zip(sorted_date_times, sorted_context)])
+        query_context = '\n\n'.join(
+            [date_time + ': ' + context for date_time, context in zip(sorted_date_times, sorted_context)])
 
     return query_context, sorted_context_ids
 
 
 def get_input_context(data, num_question_tokens, encoding, args):
-
     query_conv = ''
     min_session = -1
     stop = False
@@ -184,9 +234,11 @@ def get_input_context(data, num_question_tokens, encoding, args):
                 if "blip_caption" in dialog:
                     turn += ' and shared %s.' % dialog["blip_caption"]
                 turn += '\n'
-        
-                num_tokens = len(encoding.encode('DATE: ' + data['session_%s_date_time' % i] + '\n' + 'CONVERSATION:\n' + turn))
-                if (num_tokens + len(encoding.encode(query_conv)) + num_question_tokens) < (MAX_LENGTH[args.model]-(PER_QA_TOKEN_BUDGET*(args.batch_size))): # 20 tokens assigned for answers
+
+                num_tokens = len(
+                    encoding.encode('DATE: ' + data['session_%s_date_time' % i] + '\n' + 'CONVERSATION:\n' + turn))
+                if (num_tokens + len(encoding.encode(query_conv)) + num_question_tokens) < (MAX_LENGTH[args.model] - (
+                        PER_QA_TOKEN_BUDGET * (args.batch_size))):  # 20 tokens assigned for answers
                     query_conv = turn + query_conv
                 else:
                     min_session = i
@@ -195,7 +247,7 @@ def get_input_context(data, num_question_tokens, encoding, args):
             query_conv = 'DATE: ' + data['session_%s_date_time' % i] + '\n' + 'CONVERSATION:\n' + query_conv
         if stop:
             break
-        
+
         # if min_session == -1:
         #     print("Saved %s tokens in query conversation from full conversation" % len(encoding.encode(query_conv)))
         # else:
@@ -205,9 +257,8 @@ def get_input_context(data, num_question_tokens, encoding, args):
 
 
 def get_gpt_answers(in_data, out_data, prediction_key, args):
-
-
-    encoding = tiktoken.encoding_for_model('gpt-3.5-turbo-16k' if any([k in args.model for k in ['16k', '12k', '8k', '4k']]) else args.model)
+    encoding = tiktoken.encoding_for_model(
+        'gpt-3.5-turbo-16k' if any([k in args.model for k in ['16k', '12k', '8k', '4k']]) else args.model)
     assert len(in_data['qa']) == len(out_data['qa']), (len(in_data['qa']), len(out_data['qa']))
 
     # start instruction prompt
@@ -221,7 +272,6 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
     else:
         context_database, query_vectors = None, None
 
-
     for batch_start_idx in tqdm(range(0, len(in_data['qa']), args.batch_size), desc='Generating answers'):
 
         questions = []
@@ -230,11 +280,11 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
         cat_5_answers = []
         for i in range(batch_start_idx, batch_start_idx + args.batch_size):
 
-            if i>=len(in_data['qa']):
+            if i >= len(in_data['qa']):
                 break
 
             qa = in_data['qa'][i]
-            
+
             if prediction_key not in out_data['qa'][i] or args.overwrite:
                 include_idxs.append(i)
             else:
@@ -244,12 +294,17 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
                 questions.append(qa['question'] + ' Use DATE of CONVERSATION to answer with an approximate date.')
             elif qa['category'] == 5:
                 question = qa['question'] + " Select the correct answer: (a) {} (b) {}. "
+                try:
+                    ans = qa['answer']
+                except KeyError:
+                    ans = qa['adversarial_answer']
+
                 if random.random() < 0.5:
-                    question = question.format('Not mentioned in the conversation', qa['answer'])
-                    answer = {'a': 'Not mentioned in the conversation', 'b': qa['answer']}
+                    question = question.format('Not mentioned in the conversation', ans)
+                    answer = {'a': 'Not mentioned in the conversation', 'b': ans}
                 else:
-                    question = question.format(qa['answer'], 'Not mentioned in the conversation')
-                    answer = {'b': 'Not mentioned in the conversation', 'a': qa['answer']}
+                    question = question.format(ans, 'Not mentioned in the conversation')
+                    answer = {'b': 'Not mentioned in the conversation', 'a': ans}
 
                 cat_5_idxs.append(len(questions))
                 questions.append(question)
@@ -258,19 +313,17 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
             else:
                 questions.append(qa['question'])
 
-
         if questions == []:
             continue
 
-
         if args.use_rag:
-            query_conv, context_ids = get_rag_context(context_database, query_vectors[include_idxs][0], args) # rag mode is set to batch size 1
+            query_conv, context_ids = get_rag_context(context_database, query_vectors[include_idxs][0],
+                                                      args)  # rag mode is set to batch size 1
         else:
-            question_prompt =  QA_PROMPT_BATCH + "\n".join(["%s: %s" % (k, q) for k, q in enumerate(questions)])
+            question_prompt = QA_PROMPT_BATCH + "\n".join(["%s: %s" % (k, q) for k, q in enumerate(questions)])
             num_question_tokens = len(encoding.encode(question_prompt))
             query_conv = get_input_context(in_data['conversation'], num_question_tokens + start_tokens, encoding, args)
             query_conv = start_prompt + query_conv
-        
 
         # print("%s tokens in query" % len(encoding.encode(query_conv)))
 
@@ -282,12 +335,12 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
 
         if args.batch_size == 1:
 
-            query = query_conv + '\n\n' + QA_PROMPT.format(questions[0]) if len(cat_5_idxs) == 0 else query_conv + '\n\n' + QA_PROMPT_CAT_5.format(questions[0])
-            answer = run_chatgpt(query, num_gen=1, num_tokens_request=32, 
-                    model='chatgpt' if 'gpt-3.5' in args.model else args.model, 
-                    use_16k=True if any([k in args.model for k in ['16k', '12k', '8k', '4k']]) else False, 
-                    temperature=0, wait_time=2)
-            
+            query = query_conv + '\n\n' + QA_PROMPT.format(questions[0]) if len(
+                cat_5_idxs) == 0 else query_conv + '\n\n' + QA_PROMPT_CAT_5.format(questions[0])
+            answer = run_chatgpt(query, num_gen=1, num_tokens_request=32,
+                                 model='chatgpt' if 'gpt-3.5' in args.model else args.model,
+                                 temperature=0)
+
             if len(cat_5_idxs) > 0:
                 answer = get_cat_5_answer(answer, cat_5_answers[0])
 
@@ -298,26 +351,25 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
         else:
             # query = query_conv + '\n' + QA_PROMPT_BATCH + "\n".join(["QUESTION: %s" % q for q in questions])
             query = query_conv + '\n' + question_prompt
-            
+
             trials = 0
             while trials < 3:
+                trials += 1
+                print("Trial %s/3" % trials)
+                # print("Sending query of %s tokens" % len(encoding.encode(query)))
+                # print("Trying with answer token budget = %s per question" % PER_QA_TOKEN_BUDGET)
+                answer = run_chatgpt(query, num_gen=1, num_tokens_request=args.batch_size * PER_QA_TOKEN_BUDGET,
+                                     model='chatgpt' if 'gpt-3.5' in args.model else args.model,
+                                     temperature=0)
                 try:
-                    trials += 1
-                    print("Trial %s/3" % trials)
-                    # print("Sending query of %s tokens" % len(encoding.encode(query)))
-                    # print("Trying with answer token budget = %s per question" % PER_QA_TOKEN_BUDGET)
-                    answer = run_chatgpt(query, num_gen=1, num_tokens_request=args.batch_size*PER_QA_TOKEN_BUDGET, 
-                            model='chatgpt' if 'gpt-3.5' in args.model else args.model, 
-                            use_16k=True if any([k in args.model for k in ['16k', '12k', '8k', '4k']]) else False, 
-                            temperature=0, wait_time=2)
-                    answer = answer.replace('\\"', "'").replace('json','').replace('`','').strip().replace("\\'", "")
+                    answer = answer.replace('\\"', "'").replace('json', '').replace('`', '').strip().replace("\\'", "")
                     answers = process_ouput(answer.strip())
-                    break
-
                 except Exception as e:
-                    print('Error at trial %s/3' % trials, e)
-                    raise ValueError
-            
+                    print('Error at trial %s/3' % trials, e, "parsing using LLM")
+                    answer = get_proper_dict(answer)
+                break
+
+
             for k, idx in enumerate(include_idxs):
                 try:
                     answers = process_ouput(answer.strip())
@@ -328,9 +380,11 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
                         out_data['qa'][idx][prediction_key] = predicted_answer
                     else:
                         try:
-                            out_data['qa'][idx][prediction_key] = str(answers[str(k)]).replace('(a)', '').replace('(b)', '').strip()
+                            out_data['qa'][idx][prediction_key] = str(answers[str(k)]).replace('(a)', '').replace('(b)',
+                                                                                                                  '').strip()
                         except:
-                            out_data['qa'][idx][prediction_key] = ', '.join([str(n) for n in list(answers[str(k)].values())])
+                            out_data['qa'][idx][prediction_key] = ', '.join(
+                                [str(n) for n in list(answers[str(k)].values())])
                 except:
                     try:
                         answers = json.loads(answer.strip())
@@ -338,12 +392,14 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
                             predicted_answer = get_cat_5_answer(answers[k], cat_5_answers[cat_5_idxs.index(k)])
                             out_data['qa'][idx][prediction_key] = predicted_answer
                         else:
-                            out_data['qa'][idx][prediction_key] = answers[k].replace('(a)', '').replace('(b)', '').strip()
+                            out_data['qa'][idx][prediction_key] = answers[k].replace('(a)', '').replace('(b)',
+                                                                                                        '').strip()
                     except:
                         if k in cat_5_idxs:
                             predicted_answer = get_cat_5_answer(answer.strip(), cat_5_answers[cat_5_idxs.index(k)])
                             out_data['qa'][idx][prediction_key] = predicted_answer
                         else:
-                            out_data['qa'][idx][prediction_key] = json.loads(answer.strip().replace('(a)', '').replace('(b)', '').split('\n')[k])[0]
+                            out_data['qa'][idx][prediction_key] = \
+                            json.loads(answer.strip().replace('(a)', '').replace('(b)', '').split('\n')[k])[0]
 
     return out_data
