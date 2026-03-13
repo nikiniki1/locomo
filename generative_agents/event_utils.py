@@ -3,7 +3,8 @@ import time
 import openai
 import logging
 from datetime import datetime
-from global_methods import run_chatgpt
+from global_methods import run_chatgpt, parse_json_response
+from pydantic import AliasChoices, BaseModel, Field, RootModel
 import tiktoken
 logging.basicConfig(level=logging.INFO)
 
@@ -71,17 +72,84 @@ def num_tokens_from_string(string: str, model_name: str) -> int:
 def sort_events_by_time(graph):
 
     def catch_date(date_str):
-        date_format1 = '%d %B, %Y'
-        date_format2 = '%d %B %Y'
-        try:
-            return datetime.strptime(date_str, date_format1)
-        except:
-            return datetime.strptime(date_str, date_format2)
+        date_formats = (
+            '%d %B, %Y',
+            '%d %B %Y',
+            '%B %d, %Y',
+            '%B %d %Y',
+        )
+        for date_format in date_formats:
+            try:
+                return datetime.strptime(date_str, date_format)
+            except ValueError:
+                continue
+        raise ValueError(f"Unsupported date format: {date_str}")
     
     dates = [catch_date(node['date']) for node in graph]
     sorted_dates = sorted(enumerate(dates), key=lambda t: t[1])
     graph = [graph[idx] for idx, _ in sorted_dates]
     return graph
+
+
+class EventNode(BaseModel):
+    sub_event: str = Field(validation_alias=AliasChoices("sub-event", "sub_event"))
+    date: str = Field(validation_alias=AliasChoices("date", "time"))
+    caused_by: list[str] = Field(default_factory=list)
+    id: str
+
+    def to_legacy_dict(self):
+        return {
+            "sub-event": self.sub_event,
+            "date": self.date,
+            "caused_by": self.caused_by,
+            "id": self.id,
+        }
+
+
+class EventGraph(RootModel[list[EventNode]]):
+    def to_legacy_list(self):
+        return [event.to_legacy_dict() for event in self.root]
+
+
+def normalize_event_output(output):
+    if isinstance(output, EventGraph):
+        return output.to_legacy_list()
+    if isinstance(output, str):
+        output = parse_json_response(output)
+
+    if isinstance(output, dict):
+        lowered = {k.lower(): v for k, v in output.items()}
+        if {"id", "caused_by"} & set(lowered.keys()):
+            output = [lowered]
+        else:
+            for value in lowered.values():
+                if isinstance(value, (list, dict, str)):
+                    try:
+                        return normalize_event_output(value)
+                    except (ValueError, json.JSONDecodeError, TypeError):
+                        continue
+            raise ValueError(f"Unsupported event payload: {output}")
+
+    if not isinstance(output, list):
+        raise ValueError(f"Unsupported event payload: {output}")
+
+    normalized = []
+    for item in output:
+        if isinstance(item, list):
+            normalized.extend(normalize_event_output(item))
+            continue
+        if isinstance(item, str):
+            item = parse_json_response(item)
+        if not isinstance(item, dict):
+            raise ValueError(f"Unsupported event item: {item}")
+
+        item = {k.lower(): v for k, v in item.items()}
+        if "time" in item and "date" not in item:
+            item["date"] = item.pop("time")
+        item.setdefault("caused_by", [])
+        normalized.append(item)
+
+    return normalized
 
 
 # get events in one initialization step and one or more continuation steps.
@@ -99,11 +167,19 @@ def get_events(agent, start_date, end_date, args):
                                                                    input)
     logging.info("Generating initial events")
     try:
-        output = run_chatgpt(query, num_gen=1, num_tokens_request=512, use_16k=False, temperature=1.0).strip()
-        output = json.loads(output)
-    except:
-        output = run_chatgpt(query, num_gen=1, num_tokens_request=512, use_16k=False, temperature=1.0).strip()
-        output = json.loads(output)
+        output = run_chatgpt(
+            query,
+            num_gen=1,
+            num_tokens_request=512,
+            temperature=1.0,
+            response_format=EventGraph,
+        )
+        output = normalize_event_output(output)
+        print(output)
+    except Exception:
+        output = run_chatgpt(query, num_gen=1, num_tokens_request=512, temperature=1.0).strip()
+        print(output)
+        output = normalize_event_output(output)
 
     agent_events = output
     print("The following events have been generated in the initialization step:")
@@ -125,11 +201,18 @@ def get_events(agent, start_date, end_date, args):
         query_length = num_tokens_from_string(query, 'gpt-3.5-turbo')
         request_length = min(1024, 4096-query_length)
         try:
+            output = run_chatgpt(
+                query,
+                num_gen=1,
+                num_tokens_request=request_length,
+                use_16k=False,
+                temperature=1.0,
+                response_format=EventGraph,
+            )
+            output = normalize_event_output(output)
+        except Exception:
             output = run_chatgpt(query, num_gen=1, num_tokens_request=request_length, use_16k=False, temperature=1.0).strip()
-            output = json.loads(output)
-        except:
-            output = run_chatgpt(query, num_gen=1, num_tokens_request=request_length, use_16k=False, temperature=1.0).strip()
-            output = json.loads(output)
+            output = normalize_event_output(output)
         
         existing_eids = [e["id"] for e in agent_events]
         agent_events.extend([o for o in output if o["id"] not in existing_eids])

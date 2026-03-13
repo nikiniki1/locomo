@@ -5,9 +5,11 @@ import json
 import time
 import sys
 import os
+import re
 from openai import APIError, APIConnectionError, RateLimitError
-# import google.generativeai as genai
-# from anthropic import Anthropic
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def get_openai_embedding(texts, model="text-embedding-ada-002"):
@@ -28,6 +30,25 @@ def set_openai_key():
         openai.api_base = os.environ['OPENAI_API_BASE']
 
 
+def parse_json_response(text):
+    text = text.strip()
+    if not text:
+        raise json.JSONDecodeError("Empty response", text, 0)
+
+    cleaned = re.sub(r"```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+    decoder = json.JSONDecoder()
+    for start_idx, char in enumerate(cleaned):
+        if char not in "[{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(cleaned[start_idx:])
+            return parsed
+        except json.JSONDecodeError:
+            continue
+
+    raise json.JSONDecodeError("No JSON object found", cleaned, 0)
+
+
 def run_json_trials(query, num_gen=1, num_tokens_request=1000, 
                 model='davinci', use_16k=False, temperature=1.0, wait_time=1, examples=None, input=None):
 
@@ -42,7 +63,7 @@ def run_json_trials(query, num_gen=1, num_tokens_request=1000,
                 output = run_chatgpt(query, num_gen=num_gen, wait_time=wait_time, model=model,
                                                    num_tokens_request=num_tokens_request, use_16k=use_16k, temperature=temperature)
             output = output.replace('json', '') # this frequently happens
-            facts = json.loads(output.strip())
+            facts = parse_json_response(output)
             run_loop = False
         except json.decoder.JSONDecodeError:
             counter += 1
@@ -97,12 +118,35 @@ def run_chatgpt(
     num_gen=1,
     num_tokens_request=1000,
     model="gpt-4o-mini",
-    temperature=1.0
+    temperature=1.0,
+    wait_time=1,
+    use_16k=False,
+    response_format=None,
+    **kwargs,
 ):
     client = OpenAI(
         api_key=os.environ["OPENAI_API_KEY"],
         base_url=os.environ.get("OPENAI_API_BASE")
     )
+
+    if response_format is not None:
+        if num_gen != 1:
+            raise ValueError("Structured output requests only support num_gen=1.")
+
+        completion = client.chat.completions.parse(
+            model=model,
+            messages=[
+                {"role": "user", "content": query}
+            ],
+            max_tokens=num_tokens_request,
+            temperature=temperature,
+            response_format=response_format,
+        )
+
+        parsed = completion.choices[0].message.parsed
+        if parsed is None:
+            raise ValueError(f"Structured output parsing failed: {completion.choices[0].message.content}")
+        return parsed
 
     response = client.chat.completions.create(
         model=model,

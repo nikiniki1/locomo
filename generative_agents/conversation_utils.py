@@ -1,8 +1,6 @@
 import json, re, os
 import random
-from icrawler.builtin import ImageDownloader
-from icrawler.builtin import GoogleImageCrawler
-from global_methods import run_chatgpt, run_chatgpt_with_examples
+from global_methods import run_chatgpt, parse_json_response
 
 PERSONA_FROM_MSC_PROMPT = "Let's write speaker descriptions from a given set of life attributes. Example:\n\n%s\n\nNote: Add crucial details in the persona about the person such as their name, age, marital status, gender, job etc. Add additional details like names of family/friends or specific activities, likes and dislikes, experiences when appropriate.\n\nFor the following attributes, write a persona. Output a json file with the keys 'persona' and 'name'.\n\n%s\n\nStart your answer with a curly bracket.\n"
 
@@ -172,10 +170,10 @@ def get_persona(args, attributes, target='human', ref_age=None):
 
     try:
         output = run_chatgpt(query, num_gen=1, num_tokens_request=1000, use_16k=True).strip()
-        output = json.loads(output)
+        output = parse_json_response(output)
     except:
         output = run_chatgpt(query, num_gen=1, num_tokens_request=1000, use_16k=True).strip()
-        output = json.loads(output)
+        output = parse_json_response(output)
     
     if type(output) == list:
         output = [clean_json_output(out) for out in output]
@@ -241,62 +239,16 @@ def insert_image(text, events):
 
 
 def get_images(query, out_dir, file_offset):
-    
-    google_crawler = GoogleImageCrawler(downloader_cls=CustomLinkPrinter, storage={'root_dir': out_dir})
-    google_crawler.downloader.file_urls = []
-    google_crawler.downloader.file_names = []
-    google_crawler.crawl(keyword=query, max_num=1, file_idx_offset=file_offset, overwrite=True, filters={'type': 'photo', 'size': '=3024x4032'}) # 'license': 'commercial,modify'
-    file_urls =  google_crawler.downloader.file_urls
-    file_names = google_crawler.downloader.file_names
-
-    if file_names == []:
-        google_crawler = GoogleImageCrawler(downloader_cls=CustomLinkPrinter, storage={'root_dir': out_dir})
-        google_crawler.downloader.file_urls = []
-        google_crawler.downloader.file_names = []
-        google_crawler.crawl(keyword=query, max_num=1, file_idx_offset=file_offset, overwrite=True, filters={'type': 'photo', 'size': '=4032x3024'}) # 'license': 'commercial,modify'
-        file_urls =  google_crawler.downloader.file_urls
-        file_names = google_crawler.downloader.file_names
-    
-    return file_urls, file_names
+    return [], []
 
 
 def replace_captions(text, args):
-
-    task = json.load(open(os.path.join(args.prompt_dir, 'image_sharing_examples.json')))
-    query = task['prompt']
-    examples = []
-    for e in task['examples']:
-        examples.append([task['input_format'].format(*e["input"]), e["output"]])
-
     text = text.replace('[END]', '')
-    matches = re.findall(r"\[.*\]", text)
-    for m in matches:
-        if text.replace(m ,'').isspace():
-            return ""
-        else:
-            new_text = run_chatgpt_with_examples(query, examples, m[1:-1], num_gen=1, num_tokens_request=1000, use_16k=False)
-            if len(set(text.replace(m, '').split()).intersection(new_text.split())) < 0.5 * len(set(text.replace(m, '').split())):
-                text = text.replace(m, '')
-            else:
-                text = new_text
-        break
-
+    text = re.sub(r"\[.*?\]", "", text).strip()
     return text
 
 def insert_image_response(text):
-
-    matches = re.findall(r"\[.*\]", text)
-
-    image_search_query = None
-    m = None
-    for m in matches:
-        if 'share' in m or 'Share' in m:
-            image_search_query = run_chatgpt(DIALOG2IMAGE_QUERY_PROMPT % text, 1, 20, 'chatgpt').strip()
-            break
-        else:
-            text = text.replace(m, '')
-
-    return image_search_query, m
+    return None, None
 
 
 def merge_captions(conv_dir, caption_file):
@@ -421,87 +373,3 @@ def find_indices(list_to_check, item_to_find):
             indices.append(idx)
     return indices
 
-
-class CustomLinkPrinter(ImageDownloader):
-    
-    file_urls = []
-    file_names = []
-
-    def get_filename(self, task, default_ext):
-        file_idx = self.fetched_num + self.file_idx_offset
-        file_url = task['file_url']
-        # self.file_urls.append(file_url)
-        return '{:04d}.{}'.format(file_idx, default_ext)
-
-    def download(self, task, default_ext, timeout=5, max_retry=3, overwrite=False, **kwargs):
-        """Download the image and save it to the corresponding path.
-
-        Args:
-            task (dict): The task dict got from ``task_queue``.
-            timeout (int): Timeout of making requests for downloading images.
-            max_retry (int): the max retry times if the request fails.
-            **kwargs: reserved arguments for overriding.
-        """
-        file_url = task["file_url"]
-        task["success"] = False
-        task["filename"] = None
-        retry = max_retry
-
-        if not overwrite:
-            with self.lock:
-                self.fetched_num += 1
-                filename = self.get_filename(task, default_ext)
-                if self.storage.exists(filename):
-                    self.logger.info("skip downloading file %s", filename)
-                    return
-                self.fetched_num -= 1
-
-        while retry > 0 and not self.signal.get("reach_max_num"):
-            try:
-                response = self.session.get(file_url, timeout=timeout)
-            except Exception as e:
-                self.logger.error(
-                    "Exception caught when downloading file %s, " "error: %s, remaining retry times: %d",
-                    file_url,
-                    e,
-                    retry - 1,
-                )
-            else:
-                if self.reach_max_num():
-                    self.signal.set(reach_max_num=True)
-                    break
-                elif response.status_code != 200:
-                    self.logger.error("Response status code %d, file %s", response.status_code, file_url)
-                    break
-                elif not self.keep_file(task, response, **kwargs):
-                    break
-                with self.lock:
-                    self.fetched_num += 1
-                    filename = self.get_filename(task, default_ext)
-                self.logger.info("image #%s\t%s", self.fetched_num, file_url)
-                self.file_urls.append(file_url)
-                self.file_names.append(filename)
-                self.storage.write(filename, response.content)
-                task["success"] = True
-                task["filename"] = filename
-                break
-            finally:
-                retry -= 1
-
-    # def download(self, task, default_ext, timeout=5, max_retry=3, overwrite=False, **kwargs):
-    #     file_url = task['file_url']
-    #     filename = self.get_filename(task, default_ext)
-
-    #     task['success'] = True
-    #     task['filename'] = filename
-
-    #     if not self.signal.get('reach_max_num'):
-    #         self.file_urls.append(file_url)
-    #         self.file_names.append(filename)
-
-    #     self.fetched_num += 1
-
-    #     if self.reach_max_num():
-    #         self.signal.set(reach_max_num=True)
-
-    #     return

@@ -80,9 +80,11 @@ def get_random_time():
 
     start_time = timedelta(hours=9, minutes=0, seconds=0)
     end_time = timedelta(hours=21, minutes=59, seconds=59)
-    random_seconds = random.randint(start_time.total_seconds(), end_time.total_seconds())
-    hours = random_seconds//3600
-    minutes = (random_seconds - (hours*3600))//60
+    start_seconds = int(start_time.total_seconds())
+    end_seconds = int(end_time.total_seconds())
+    random_seconds = random.randint(start_seconds, end_seconds)
+    hours = random_seconds // 3600
+    minutes = (random_seconds - (hours * 3600)) // 60
     return timedelta(hours=hours, minutes=minutes, seconds=0)
 
 
@@ -167,12 +169,18 @@ def get_all_session_summary(speaker, curr_sess_id):
 
 
 def catch_date(date_str):
-    date_format1 = '%d %B, %Y'
-    date_format2 = '%d %B %Y'
-    try:
-        return datetime.strptime(date_str, date_format1)
-    except:
-        return datetime.strptime(date_str, date_format2)
+    date_formats = (
+        '%d %B, %Y',
+        '%d %B %Y',
+        '%B %d, %Y',
+        '%B %d %Y',
+    )
+    for date_format in date_formats:
+        try:
+            return datetime.strptime(date_str, date_format)
+        except ValueError:
+            continue
+    raise ValueError(f"Unsupported date format: {date_str}")
 
 
 def get_session_date(events, args, prev_date = None):

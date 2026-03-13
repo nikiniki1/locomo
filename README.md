@@ -5,7 +5,16 @@ Benchmark divide into 2 parts: data generation; data evaluation.
 
 ***How to run data generation?***
 
-WIP
+```
+python generate_benchmark.py \
+  --out-dir benchmark \
+  --language en \
+  --num-samples 2 \
+  --num-sessions 5 \
+  --num-events 12 \
+  --qa-per-sample 10 \
+  --model openai/gpt-5.4
+```
 
 ***How to run eval?***
 * Copy ```env.example``` into ```.env``` and set up any neccessary env variables.
