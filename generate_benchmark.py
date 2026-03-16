@@ -27,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overwrite-session", action="store_true")
     parser.add_argument("--overwrite-annotations", action="store_true")
     parser.add_argument("--mark-persona-as-used", action="store_true")
+    parser.add_argument("--fail-fast", action="store_true", help="Stop on first error (default: False)")
+    parser.add_argument("--no-save-intermediate", action="store_true", help="Skip saving per-sample agent state files")
+    parser.add_argument("--no-structured-output", action="store_true",
+                        help="Disable structured output (use plain text fallback). Required for GigaChat.")
     return parser
 
 
@@ -54,6 +58,9 @@ def main() -> None:
         overwrite_session=args.overwrite_session,
         overwrite_annotations=args.overwrite_annotations,
         mark_persona_as_used=args.mark_persona_as_used,
+        fail_fast=args.fail_fast,
+        save_intermediate_agents=not args.no_save_intermediate,
+        no_structured_output=args.no_structured_output,
     )
     pipeline = GenerateBenchmark(config)
     pipeline.run()

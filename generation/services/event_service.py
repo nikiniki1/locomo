@@ -118,7 +118,7 @@ class EventNode(BaseModel):
 
     id: str
     date: str = Field(validation_alias=AliasChoices("date", "time"))
-    sub_event: str = Field(validation_alias=AliasChoices("sub-event", "sub_event"))
+    sub_event: str = Field(default="", validation_alias=AliasChoices("sub-event", "sub_event", "description", "event"))
     caused_by: list[str] = Field(default_factory=list)
 
     def to_event(self) -> Event:
@@ -197,13 +197,20 @@ def _generate_events_text_fallback(
     *,
     max_tokens: int,
 ) -> list[Event]:
+    import logging as _log
+    _logger = _log.getLogger(__name__)
     fallback_prompt = (
         prompt
         + '\n\nReturn valid JSON only. Do not include explanations, markdown, or prose. '
         + 'Use the schema {"events": [...]} exactly.'
     )
     raw = llm.complete_text(fallback_prompt, max_tokens=max_tokens, temperature=0.7)
-    return _normalize_event_payload(raw)
+    try:
+        return _normalize_event_payload(raw)
+    except Exception as exc:
+        _logger.warning("Event text fallback failed (%s). Raw response (first 300 chars): %s",
+                        exc, raw[:300] if raw else "<empty>")
+        return []
 
 
 def generate_events(
@@ -221,13 +228,21 @@ def generate_events(
         prompt_persona = persona.persona + f"\nAssign dates between {start_date} and {end_date}."
         init_prompt = EVENT_INIT_PROMPT_EN % (persona_example, graph_example, prompt_persona)
 
+    # ~150 tokens per event in JSON; minimum 512
+    init_max_tokens = max(512, config.num_events * 150)
     try:
-        events = llm.complete_structured(init_prompt, response_format=EventGraph, max_tokens=512).to_events()
+        events = llm.complete_structured(init_prompt, response_format=EventGraph, max_tokens=init_max_tokens).to_events()
     except Exception:
-        events = _generate_events_text_fallback(llm, init_prompt, max_tokens=512)
+        events = _generate_events_text_fallback(llm, init_prompt, max_tokens=init_max_tokens)
 
+    import re as _re
+    max_iters = config.num_events * 5  # safety: break if no progress
+    iters_without_progress = 0
     while len(events) < config.num_events:
-        last_id = int(events[-1].id[1:])
+        prev_count = len(events)
+        raw_id = events[-1].id[1:]
+        digits = _re.sub(r"[^\d]", "", raw_id)
+        last_id = int(digits) if digits else len(events)
         remaining = config.num_events - len(events)
         batch_size = min(2, remaining)
         next_ids = [f"E{i}" for i in range(last_id + 1, last_id + batch_size + 1)]
@@ -262,6 +277,19 @@ def generate_events(
         seen = {event.id for event in events}
         events.extend([event for event in new_events if event.id not in seen])
         events = filter_events(events)
+
+        if len(events) == prev_count:
+            iters_without_progress += 1
+            if iters_without_progress >= 5:
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "Event generation stalled at %d/%d after %d attempts — stopping early.",
+                    len(events), config.num_events, iters_without_progress,
+                )
+                break
+        else:
+            iters_without_progress = 0
+
     return events[: config.num_events]
 
 
