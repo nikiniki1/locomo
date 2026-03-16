@@ -30,7 +30,10 @@ class GenerateBenchmark:
         self.config = config
         self._configure_logging()
         ensure_output_dir(self.config.paths.out_dir)
-        self.llm = LLMClient(model=self.config.model)
+        self.llm = LLMClient(
+            model=self.config.model,
+            no_structured_output=self.config.no_structured_output,
+        )
 
         self.persona_generator = PersonaGenerator(config, self.llm)
         self.event_generator = EventGraphGenerator(config, self.llm)

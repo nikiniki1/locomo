@@ -37,6 +37,7 @@ class BenchmarkConfig(BaseModel):
     sample_prefix: str = "sample"
     sample_id_prefix: str = "S"
     fail_fast: bool = True
+    no_structured_output: bool = False
 
     @property
     def dataset_file(self) -> Path:
